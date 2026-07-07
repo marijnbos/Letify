@@ -1,4 +1,3 @@
-.venv
 .env
 __pycache__
 .DS_Store
@@ -14,3 +13,4 @@ logs/
 *.log
 .ruff_cache
 dutch_realestate_scraper.egg-info
+*venv/*

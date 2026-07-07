@@ -96,6 +96,13 @@ def parse_args():
     proxy_group.add_argument("--proxy-stats", action="store_true",
                             help="Display proxy stats before exiting")
     
+    # Browser automation options
+    browser_group = parser.add_argument_group("Browser Automation Options")
+    browser_group.add_argument("--use-playwright", action="store_true", default=True,
+                              help="Use Playwright with stealth mode for better evasion (default: enabled)")
+    browser_group.add_argument("--no-playwright", action="store_true",
+                              help="Disable Playwright and use httpx only")
+    
     # Telegram options
     telegram_group = parser.add_argument_group("Telegram Options")
     telegram_group.add_argument("--init-telegram-db", action="store_true",
@@ -295,6 +302,9 @@ async def main():
         use_proxies = False
     proxy_list = [p.strip() for p in args.proxy_list.split(",") if p.strip()] if args.proxy_list else None
     
+    # Handle Playwright options
+    use_playwright = not args.no_playwright
+    
     # Log configuration
     logger.info(f"Starting scraper for sources: {sources}")
     logger.info(f"Scan mode: {'Query URLs' if use_query_urls and not use_city_scan else 'Cities' if use_city_scan and not use_query_urls else 'Combined'}")
@@ -306,6 +316,7 @@ async def main():
     if use_proxies:
         proxy_count = len(proxy_list) if proxy_list else len(PROXY_LIST)
         logger.info(f"Proxy usage enabled with {proxy_count} proxies")
+    logger.info(f"Browser automation: {'Playwright with stealth mode (CloakBrowser-like)' if use_playwright else 'httpx only'}")
     
     # Create scraper instance
     scraper = RealEstateScraper(
@@ -317,7 +328,8 @@ async def main():
         max_concurrent_requests=args.max_concurrent,
         use_proxies=use_proxies,
         skip_cities=not use_city_scan,
-        skip_query_urls=not use_query_urls
+        skip_query_urls=not use_query_urls,
+        use_playwright=use_playwright
     )
     
     # Set proxy rotation strategy

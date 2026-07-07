@@ -638,12 +638,27 @@ class EnhancedHttpClient:
         raise httpx.RequestError(f"Exceeded maximum anti-bot retries ({max_antibot_retries}) for {url}", 
                                request=None)
     
+    async def get(self, url: str, source: str = "unknown", **kwargs) -> httpx.Response:
+        """
+        Make an HTTP GET request using the enhanced client
+        
+        Args:
+            url: URL to request
+            source: Source name for logging and anti-bot detection (default: "unknown")
+            **kwargs: Additional keyword arguments to pass to make_request
+            
+        Returns:
+            httpx.Response: Response object with text properly decoded
+        """
+        return await self.make_request(url, source=source, method="GET", **kwargs)
+    
     async def get_with_fallback(self, url: str, **kwargs) -> httpx.Response:
         """
         Make an HTTP GET request with proxy first, then fall back to direct connection if proxy fails
         
         Args:
             url: URL to request
+            source: Source name for logging (optional, default: "unknown")
             **kwargs: Additional keyword arguments for httpx.AsyncClient.get
             
         Returns:
@@ -652,18 +667,20 @@ class EnhancedHttpClient:
         Raises:
             httpx.RequestError: If both proxy and direct requests fail
         """
+        source = kwargs.pop("source", "unknown")
+        
         if not self.use_proxies:
-            return await self.get(url, **kwargs)
+            return await self.get(url, source=source, **kwargs)
         
         try:
             # First try with proxy
-            return await self.get(url, **kwargs)
+            return await self.get(url, source=source, **kwargs)
         except httpx.RequestError as e:
             logger.warning(f"Proxy request failed for {url}. Falling back to direct connection.")
             # Temporarily disable proxies and try again
             self.use_proxies = False
             try:
-                return await self.get(url, **kwargs)
+                return await self.get(url, source=source, **kwargs)
             finally:
                 # Re-enable proxies for future requests
                 self.use_proxies = True

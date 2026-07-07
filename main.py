@@ -25,11 +25,82 @@ from database.property_db import PropertyDatabase
 from database.telegram_db import TelegramDatabase
 from scrapers.factory import RealEstateScraperFactory
 from utils.http import EnhancedHttpClient
+from utils.playwright_client import PlaywrightHttpClient
 from utils.proxy_manager import ProxyManager
 from utils.logging_config import configure_scraper_logging
 
 # Set up logging
 logger = configure_scraper_logging()
+
+class HybridHttpClient:
+    """Hybrid HTTP client that tries Playwright first, falls back to httpx"""
+    
+    def __init__(self, use_playwright: bool = True, **kwargs):
+        self.use_playwright = use_playwright
+        self.playwright_client = None
+        self.httpx_client = EnhancedHttpClient(**kwargs)
+        self.kwargs = kwargs
+    
+    async def initialize(self):
+        """Initialize Playwright client if enabled"""
+        if self.use_playwright:
+            try:
+                self.playwright_client = PlaywrightHttpClient(**self.kwargs)
+                logger.info("Using Playwright with stealth mode for requests")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Playwright: {e}. Falling back to httpx.")
+                self.use_playwright = False
+    
+    async def get(self, url: str, source: str = "unknown", **kwargs):
+        """
+        Get request with Playwright first, fallback to httpx
+        
+        Returns an object compatible with httpx.Response
+        """
+        # Try Playwright first
+        if self.use_playwright and self.playwright_client:
+            try:
+                result = await self.playwright_client.get(url, source=source)
+                
+                # Create a response object compatible with httpx.Response
+                class PlaywrightResponse:
+                    def __init__(self, data):
+                        self.text = data["text"]
+                        self.status_code = data["status"]
+                        self.url = data["url"]
+                        self._data = data
+                    
+                    def __repr__(self):
+                        return f"<PlaywrightResponse [{self.status_code}]>"
+                
+                return PlaywrightResponse(result)
+            except Exception as e:
+                logger.warning(f"Playwright request failed for {url}: {e}. Falling back to httpx.")
+        
+        # Fallback to httpx
+        return await self.httpx_client.get(url, source=source, **kwargs)
+    
+    async def make_request(self, url: str, source: str = "unknown", **kwargs):
+        """
+        Make request with Playwright first (for GET), fallback to httpx
+        
+        For compatibility with EnhancedHttpClient interface
+        """
+        # Playwright handles GET requests well, use it for those
+        if kwargs.get("method", "GET") == "GET":
+            return await self.get(url, source=source, **kwargs)
+        
+        # For other methods (POST, etc.), use httpx
+        logger.debug(f"Using httpx for {kwargs.get('method', 'GET')} request to {url}")
+        return await self.httpx_client.make_request(url, source=source, **kwargs)
+    
+    async def close(self):
+        """Close both clients"""
+        if self.playwright_client:
+            try:
+                await self.playwright_client.close()
+            except:
+                pass
 
 class RealEstateScraper:
     """Main scraper class orchestrating the scraping process"""
@@ -44,7 +115,8 @@ class RealEstateScraper:
                  use_proxies: bool = USE_PROXIES,
                  stop_after_no_result: bool = STOP_AFTER_NO_RESULT,
                  skip_cities: bool = False,
-                 skip_query_urls: bool = False):
+                 skip_query_urls: bool = False,
+                 use_playwright: bool = True):
         """
         Initialize the scraper with sources and cities to scan.
         
@@ -59,6 +131,7 @@ class RealEstateScraper:
             skip_cities: Whether to skip city-based scanning
             skip_query_urls: Whether to skip query URL scanning
             stop_after_no_result: Stop scanning next pages if current page has no result
+            use_playwright: Whether to use Playwright with stealth mode (CloakBrowser-like)
         """
         self.sources = sources
         self.cities = cities
@@ -76,7 +149,12 @@ class RealEstateScraper:
         # Initialize HTTP client and proxy manager
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)
         self.proxy_manager = ProxyManager(enabled=use_proxies)
-        self.http_client = EnhancedHttpClient(semaphore=self.semaphore, use_proxies=use_proxies)
+        self.http_client = HybridHttpClient(
+            use_playwright=use_playwright,
+            semaphore=self.semaphore,
+            use_proxies=use_proxies
+        )
+        
         
         # Initialize scrapers for each source
         self.scrapers = {}
@@ -193,7 +271,7 @@ class RealEstateScraper:
         try:
             proxy = await self.proxy_manager.get_proxy() if self.proxy_manager.enabled else None
             try:
-                response = await self.http_client.get(search_url)
+                response = await self.http_client.get(search_url, source=source)
                 if proxy and response.status_code == 200:
                     await self.proxy_manager.report_success(proxy, time.time() - start_time)
             except Exception as e:
@@ -234,6 +312,9 @@ class RealEstateScraper:
     
     async def run_one_scan(self):
         """Run a single scan based on configured scan modes."""
+        # Initialize HTTP client
+        await self.http_client.initialize()
+        
         total_new = 0
         total_processed = 0
         first_scan_by_source = {}
@@ -400,6 +481,12 @@ class RealEstateScraper:
         except Exception as e:
             logger.error(f"Error in continuous scraper: {e}")
             raise
+        finally:
+            # Clean up HTTP client
+            try:
+                await self.http_client.close()
+            except Exception:
+                pass
 
 async def main():
     """Main entry point for the scraper."""
